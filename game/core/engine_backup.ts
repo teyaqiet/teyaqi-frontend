@@ -1,0 +1,174 @@
+/**
+ * @teyaqi-feat: Teyaqi-State-Machine
+ */
+
+"use client";
+
+import { GameState, GameAction } from "./gameTypes";
+import { initialState } from "./state";
+import { streakSystem } from "@/game/systems/streakSystem";
+
+export { initialState };
+
+export function gameReducer(
+  state: GameState,
+  action: GameAction
+): GameState {
+  switch (action.type) {
+    // ✅ FIXED: Added missing tracking step to safely catch initial metadata seeds
+    case "PRELOAD_CHALLENGE_META": {
+      return {
+        ...state,
+        questions: action.payload.questions || [],
+        timeLimit: Number(action.payload.timeLimit) || 15,
+        timeMode: action.payload.timeMode || "per_question",
+        lives: action.payload.lives ?? state.lives, // Retain live values if passed
+        resetTime: action.payload.resetTime || state.resetTime
+      };
+    }
+
+    case "START_GAME": {
+      const mode = action.payload.timeMode || "per_session";
+      const limit = Number(action.payload.timeLimit) || 60;
+
+      return {
+        ...state,
+        status: "playing",
+        questions: action.payload.questions,
+        lives: action.payload.lives,
+        sr: action.payload.sr,
+        attemptId: action.payload.attemptId || null,
+        sessionId: action.payload.sessionId || null,
+        resetTime: action.payload.resetTime || null,
+        timeMode: mode,
+        timeLimit: limit,
+        timeLeft: limit,
+        timeSpent: 0,
+        currentQuestionIndex: 0,
+        savedResponses: [],
+        maxStreak: 0,
+        xp: 0,
+        correctCount: 0, // ✅ FIXED: Initialized session counter
+        rewardXp: action.payload.rewardXp || 0, // ✅ FIXED: Captured reward metadata
+        isCorrect: null
+      };
+    }
+
+    case "TICK_CLOCK": {
+      if (state.status !== "playing") return state;
+
+      const newTimeLeft = Math.max(0, state.timeLeft - 1);
+      const isTimeOut = newTimeLeft <= 0;
+
+      if (isTimeOut && state.timeMode === "per_question") {
+        const currentQuestion = state.questions[state.currentQuestionIndex];
+        const expiredResponses = [
+          ...state.savedResponses,
+          {
+            question_id: currentQuestion.id,
+            selected_option: "none",
+            remaining_time: 0,
+            is_correct: false,
+          },
+        ];
+
+        const nextIndex = state.currentQuestionIndex + 1;
+        const outOfBounds = nextIndex >= state.questions.length;
+        const newLives = Math.max(0, state.lives - 1);
+
+        return {
+          ...state,
+          timeLeft: state.timeLimit,
+          timeSpent: state.timeSpent + 1,
+          lives: newLives,
+          streak: 0,
+          wrongStreak: state.wrongStreak + 1,
+          savedResponses: expiredResponses,
+          currentQuestionIndex: outOfBounds ? state.currentQuestionIndex : nextIndex,
+          status: newLives <= 0 ? "gameover" : outOfBounds ? "completed" : "playing",
+        };
+      }
+
+      if (isTimeOut && state.timeMode === "per_session") {
+        return {
+          ...state,
+          timeLeft: 0,
+          timeSpent: state.timeSpent + 1,
+          status: "completed",
+        };
+      }
+
+      return {
+        ...state,
+        timeLeft: newTimeLeft,
+        timeSpent: state.timeSpent + 1,
+      };
+    }
+
+    case "SUBMIT_ANSWER": {
+      const {
+        isCorrect,
+        predictedXP = 0,
+        selectedOption,
+        remainingTimeSeconds = 0,
+      } = action.payload;
+
+      const currentQuestion = state.questions[state.currentQuestionIndex];
+      const newLives = isCorrect ? state.lives : Math.max(0, state.lives - 1);
+      const isGameOver = newLives <= 0;
+      const currentStreak = isCorrect ? state.streak + 1 : 0;
+      const computedMaxStreak = Math.max(state.maxStreak, currentStreak);
+
+      const responsePayload = {
+        question_id: currentQuestion.id,
+        selected_option: selectedOption.toLowerCase(),
+        remaining_time: remainingTimeSeconds,
+        is_correct: isCorrect,
+      };
+
+      return {
+        ...state,
+        isCorrect,
+        xp: state.xp + predictedXP,
+        correctCount: isCorrect ? state.correctCount + 1 : state.correctCount, // ✅ FIXED: Track successes
+        lastPredictedXP: predictedXP,
+        lives: newLives,
+        streak: currentStreak,
+        maxStreak: computedMaxStreak,
+        wrongStreak: isCorrect ? 0 : state.wrongStreak + 1,
+        status: isGameOver ? "gameover" : state.status, 
+        savedResponses: [...state.savedResponses, responsePayload],
+      };
+    }
+
+    case "NEXT_QUESTION": {
+      if (state.lives <= 0) return { ...state, status: "gameover" };
+
+      const nextIndex = state.currentQuestionIndex + 1;
+
+      if (nextIndex >= state.questions.length) {
+        return {
+          ...state,
+          status: "completed",
+          isCorrect: null,
+        };
+      }
+
+      return {
+        ...state,
+        currentQuestionIndex: nextIndex,
+        isCorrect: null,
+        status: "playing",
+        timeLeft: state.timeMode === "per_question" ? state.timeLimit : state.timeLeft,
+      };
+    }
+
+    case "RESET_GAME":
+      return {
+        ...initialState,
+      };
+
+    default:
+      return state;
+  }
+}
